@@ -112,3 +112,13 @@ class GatewayServer:
     def __exit__(self, *exc):
         self._server.shutdown()
         self._server.server_close()
+
+    def serve_forever(self) -> None:
+        """Run in the foreground (used by the CLI entrypoint) until interrupted."""
+        print(f"GatewayKit listening on http://127.0.0.1:{self.port}", flush=True)
+        try:
+            self._server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._server.server_close()
