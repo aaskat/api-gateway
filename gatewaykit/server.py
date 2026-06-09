@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from gatewaykit.config import GatewayConfig
 from gatewaykit.core import Response
 from gatewaykit.health import HealthCheck
+from gatewaykit.router import Router
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -22,8 +23,15 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if self.command == "GET" and path == "/health":
             self._send(self.server.health.response())
-        else:
+            return
+
+        route = self.server.router.match(path)
+        if route is None:
             self._send(_not_found(path))
+        elif self.command not in route.methods:
+            self._send(_method_not_allowed(route.methods))
+        else:
+            self._send(_not_implemented())  # placeholder until the proxy lands (0g)
 
     do_GET = _dispatch
     do_POST = _dispatch
@@ -48,6 +56,18 @@ def _not_found(path: str) -> Response:
     return Response(404, {"Content-Type": "application/json"}, body)
 
 
+def _method_not_allowed(allowed: list[str]) -> Response:
+    body = json.dumps({"error": "method_not_allowed", "allowed": allowed}).encode()
+    # RFC 7231: a 405 response must list permitted methods in Allow.
+    headers = {"Content-Type": "application/json", "Allow": ", ".join(allowed)}
+    return Response(405, headers, body)
+
+
+def _not_implemented() -> Response:
+    body = json.dumps({"error": "not_implemented"}).encode()
+    return Response(501, {"Content-Type": "application/json"}, body)
+
+
 class GatewayServer:
     """Threaded gateway server; context manager exposing the bound port."""
 
@@ -55,6 +75,7 @@ class GatewayServer:
         self._config = config
         self._server = ThreadingHTTPServer(("127.0.0.1", config.port), _Handler)
         self._server.health = HealthCheck(clock=clock)
+        self._server.router = Router(config.routes)
         self.port = self._server.server_address[1]
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
 
