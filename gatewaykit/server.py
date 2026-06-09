@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from gatewaykit.config import GatewayConfig
 from gatewaykit.core import Response
 from gatewaykit.health import HealthCheck
+from gatewaykit.proxy import forward
 from gatewaykit.router import Router
 
 
@@ -25,13 +26,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(self.server.health.response())
             return
 
-        route = self.server.router.match(path)
-        if route is None:
-            self._send(_not_found(path))
-        elif self.command not in route.methods:
-            self._send(_method_not_allowed(route.methods))
-        else:
-            self._send(_not_implemented())  # placeholder until the proxy lands (0g)
+        match self.server.router.match(path):
+            case None:
+                self._send(_not_found(path))
+            case route if self.command not in route.methods:
+                self._send(_method_not_allowed(route.methods))
+            case route:
+                self._send(self._forward(route))
+
+    def _forward(self, route) -> Response:
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        return forward(
+            self.command,
+            route.upstream.url,
+            self.path,  # full path incl. query; strip_prefix is Tier 1
+            dict(self.headers),
+            body,
+            self.server.config.global_timeout,
+        )
 
     do_GET = _dispatch
     do_POST = _dispatch
@@ -63,11 +76,6 @@ def _method_not_allowed(allowed: list[str]) -> Response:
     return Response(405, headers, body)
 
 
-def _not_implemented() -> Response:
-    body = json.dumps({"error": "not_implemented"}).encode()
-    return Response(501, {"Content-Type": "application/json"}, body)
-
-
 class GatewayServer:
     """Threaded gateway server; context manager exposing the bound port."""
 
@@ -76,6 +84,7 @@ class GatewayServer:
         self._server = ThreadingHTTPServer(("127.0.0.1", config.port), _Handler)
         self._server.health = HealthCheck(clock=clock)
         self._server.router = Router(config.routes)
+        self._server.config = config
         self.port = self._server.server_address[1]
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
 
