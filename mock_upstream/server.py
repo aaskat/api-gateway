@@ -111,8 +111,12 @@ class MockUpstream:
         self._server.server_close()
 
 
-if __name__ == "__main__":
+def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     server = _Server(("127.0.0.1", port), _Handler)
     print(f"mock upstream on http://127.0.0.1:{server.server_address[1]}")
     server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
