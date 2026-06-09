@@ -1,8 +1,8 @@
 """The gateway HTTP server: ThreadingHTTPServer bound to the configured port.
 
-For now it serves GET /health (bypassing the pipeline) and returns 404 for
-everything else. The router, method filter, and proxy replace the 404 fallback
-in later units.
+Serves GET /health (bypassing the pipeline). For matched routes it builds a
+RequestContext, runs the route's compiled middleware chain, and forwards to the
+upstream as the pipeline terminal.
 """
 
 import json
@@ -13,8 +13,9 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from gatewaykit.config import GatewayConfig
-from gatewaykit.core import Response
+from gatewaykit.core import RequestContext, Response
 from gatewaykit.health import HealthCheck
+from gatewaykit.middleware import build_pipeline, run_pipeline
 from gatewaykit.proxy import forward
 from gatewaykit.router import Router
 
@@ -32,17 +33,30 @@ class _Handler(BaseHTTPRequestHandler):
             case route if self.command not in route.methods:
                 self._send(_method_not_allowed(route.methods))
             case route:
-                self._send(self._forward(route))
+                self._send(self._handle_route(route))
 
-    def _forward(self, route) -> Response:
+    def _handle_route(self, route) -> Response:
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length else b""
+        ctx = RequestContext(
+            method=self.command,
+            path=self.path,
+            headers=dict(self.headers),
+            body=body,
+            client_ip=self.client_address[0],
+            route=route,
+            upstream_path=self.path,  # mutated by strip_prefix and friends
+        )
+        chain = self.server.chains[id(route)]
+        return run_pipeline(ctx, chain, self._forward)
+
+    def _forward(self, ctx: RequestContext) -> Response:
         return forward(
-            self.command,
-            route.upstream.url,
-            self.path,  # full path incl. query; strip_prefix is Tier 1
-            dict(self.headers),
-            body,
+            ctx.method,
+            ctx.route.upstream.url,
+            ctx.upstream_path,
+            ctx.headers,
+            ctx.body,
             self.server.config.global_timeout,
         )
 
@@ -85,6 +99,9 @@ class GatewayServer:
         self._server.health = HealthCheck(clock=clock)
         self._server.router = Router(config.routes)
         self._server.config = config
+        # Compile each route's middleware chain once, so stateful middleware
+        # (rate limiters, circuit breakers) persist across requests.
+        self._server.chains = {id(route): build_pipeline(route) for route in config.routes}
         self.port = self._server.server_address[1]
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
 
