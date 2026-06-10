@@ -5,7 +5,7 @@
 - **Every unit was built test-first:** wrote the failing test(s), confirmed a *meaningful* red (a real assertion failure, never an import/syntax error), then the minimal code to go green.
 - Committed each red→green cycle separately — the **commit history is the story** of how the gateway grew.
 - Time-based logic (rate-limit windows) tested via an injected clock, so tests are deterministic and never `sleep`.
-- Result: 69 tests, all green, suite self-contained (mock upstream on an ephemeral port).
+- Result: 79 tests, all green, suite self-contained (mock upstream on an ephemeral port).
 
 ## How I prioritized
 
@@ -36,13 +36,13 @@
 
 ## Partially implemented
 
-- **Rate limiting:** both `FixedWindowLimiter` + `SlidingWindowLimiter` done, thread-safe, fully tested (incl. concurrency).
-- The `RateLimit` *middleware* (strategy select, ip/global bucket, `429 + Retry-After`) is **not yet wired into `build_pipeline`** → not active on live requests. Remaining: middleware class + 1 line.
+- **Rate limiting:** both `FixedWindowLimiter` + `SlidingWindowLimiter` done, thread-safe, fully tested (incl. concurrency). The `RateLimit` *middleware* (strategy select, ip/global bucket, `429 + Retry-After`) is **wired into `build_pipeline`** → active on live requests, ordered before `strip_prefix` so over-limit requests reject before any work. Remaining: **global** `global_rate_limit` (route-overrides-global) needs a `build_pipeline` signature change.
+- Known edge: limiters raise `IndexError` on `requests=0` (`hits[0]`) — not hit by any valid config; worth a guard.
 - `auth` / `retry` / `targets` (LB) / `circuit_breaker` / transforms / per-route `timeout`: **parsed + preserved, not enforced** (any valid config still loads).
 
 ## What I'd build next (in order)
 
-1. Wire `RateLimit` middleware into the pipeline (`429 + Retry-After`, route-overrides-global).
+1. Global `global_rate_limit` with route-overrides-global (route-level already wired).
 2. `api_key` auth middleware (short-circuit 401).
 3. Per-route `timeout` override (already parsed; thread to `forward`).
 4. `retry` with fixed/exponential backoff.
