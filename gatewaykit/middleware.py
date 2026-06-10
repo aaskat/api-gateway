@@ -72,6 +72,8 @@ def build_pipeline(route: RouteConfig) -> list[Middleware]:
     state across requests. New features append here.
     """
     chain: list[Middleware] = []
+    if route.rate_limit:
+        chain.append(RateLimit(route.rate_limit))  # outermost: reject before any work
     if route.strip_prefix:
         chain.append(StripPrefix())
     return chain

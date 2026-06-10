@@ -1,11 +1,14 @@
 """Tier 2: RateLimit middleware — strategy select, ip/global bucket, 429 + Retry-After."""
 
+import http.client
 import json
 
+from gatewaykit.config import GatewayConfig, RouteConfig, UpstreamConfig
 from gatewaykit.config import RateLimit as RateLimitConfig
 from gatewaykit.core import RequestContext, Response
-from gatewaykit.middleware import RateLimit
+from gatewaykit.middleware import RateLimit, StripPrefix, build_pipeline
 from gatewaykit.ratelimit import FixedWindowLimiter, SlidingWindowLimiter
+from gatewaykit.server import GatewayServer
 
 
 class FakeClock:
@@ -76,3 +79,56 @@ def test_per_global_shares_one_bucket():
 def test_strategy_select():
     assert isinstance(RateLimit(config(strategy="fixed_window"))._limiter, FixedWindowLimiter)
     assert isinstance(RateLimit(config(strategy="sliding_window"))._limiter, SlidingWindowLimiter)
+
+
+def route(rate_limit=None, strip=False) -> RouteConfig:
+    return RouteConfig(
+        path="/svc",
+        methods=["GET"],
+        strip_prefix=strip,
+        upstream=UpstreamConfig(url="http://x"),
+        rate_limit=rate_limit,
+    )
+
+
+def test_build_pipeline_includes_rate_limit_when_configured():
+    chain = build_pipeline(route(rate_limit=config()))
+    assert len(chain) == 1 and isinstance(chain[0], RateLimit)
+
+
+def test_build_pipeline_omits_rate_limit_when_absent():
+    assert build_pipeline(route()) == []
+
+
+def test_build_pipeline_orders_rate_limit_before_strip_prefix():
+    chain = build_pipeline(route(rate_limit=config(), strip=True))
+    assert [type(m) for m in chain] == [RateLimit, StripPrefix]  # reject before work
+
+
+def test_server_rate_limits_after_exceeding(mock_upstream):
+    cfg = GatewayConfig(
+        port=0,
+        global_timeout="30s",
+        routes=[
+            RouteConfig(
+                path="/svc",
+                methods=["GET"],
+                strip_prefix=True,
+                upstream=UpstreamConfig(url=mock_upstream.base_url),
+                rate_limit=config(requests=2),
+            )
+        ],
+    )
+    with GatewayServer(cfg) as server:
+        statuses, retry_after = [], None
+        for _ in range(3):
+            conn = http.client.HTTPConnection("127.0.0.1", server.port)
+            conn.request("GET", "/svc/echo")
+            resp = conn.getresponse()
+            resp.read()
+            statuses.append(resp.status)
+            if resp.status == 429:
+                retry_after = resp.getheader("Retry-After")
+            conn.close()
+    assert statuses == [200, 200, 429]
+    assert retry_after == "60"
