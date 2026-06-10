@@ -102,7 +102,9 @@ class GatewayServer:
         self._server.config = config
         # Compile each route's middleware chain once, so stateful middleware
         # (rate limiters, circuit breakers) persist across requests.
-        self._server.chains = {id(route): build_pipeline(route) for route in config.routes}
+        self._server.chains = {
+            id(route): build_pipeline(route, config.global_rate_limit) for route in config.routes
+        }
         self.port = self._server.server_address[1]
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
 

@@ -65,15 +65,19 @@ class StripPrefix(Middleware):
         return next(ctx)
 
 
-def build_pipeline(route: RouteConfig) -> list[Middleware]:
+def build_pipeline(
+    route: RouteConfig, global_rate_limit: RateLimitConfig | None = None
+) -> list[Middleware]:
     """Compile a route's config into its ordered middleware chain.
 
     Built once at startup so stateful middleware (e.g. rate limiters) keep their
     state across requests. New features append here.
     """
     chain: list[Middleware] = []
-    if route.rate_limit:
-        chain.append(RateLimit(route.rate_limit))  # outermost: reject before any work
+    # Route-level rate_limit overrides the gateway-wide global_rate_limit default.
+    rate_limit = route.rate_limit or global_rate_limit
+    if rate_limit:
+        chain.append(RateLimit(rate_limit))  # outermost: reject before any work
     if route.strip_prefix:
         chain.append(StripPrefix())
     return chain

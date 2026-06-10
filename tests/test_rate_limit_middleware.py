@@ -100,6 +100,20 @@ def test_build_pipeline_omits_rate_limit_when_absent():
     assert build_pipeline(route()) == []
 
 
+def test_build_pipeline_uses_global_when_route_has_none():
+    chain = build_pipeline(route(), global_rate_limit=config())
+    assert len(chain) == 1 and isinstance(chain[0], RateLimit)
+
+
+def test_route_rate_limit_overrides_global():
+    chain = build_pipeline(route(rate_limit=config(requests=99)), global_rate_limit=config(requests=1))
+    assert chain[0]._limiter._requests == 99  # route wins, not the global 1
+
+
+def test_no_rate_limit_when_neither_route_nor_global():
+    assert build_pipeline(route(), global_rate_limit=None) == []
+
+
 def test_build_pipeline_orders_rate_limit_before_strip_prefix():
     chain = build_pipeline(route(rate_limit=config(), strip=True))
     assert [type(m) for m in chain] == [RateLimit, StripPrefix]  # reject before work
@@ -132,3 +146,30 @@ def test_server_rate_limits_after_exceeding(mock_upstream):
             conn.close()
     assert statuses == [200, 200, 429]
     assert retry_after == "60"
+
+
+def test_server_applies_global_rate_limit_to_route_without_one(mock_upstream):
+    cfg = GatewayConfig(
+        port=0,
+        global_timeout="30s",
+        global_rate_limit=config(requests=2),
+        routes=[
+            RouteConfig(
+                path="/svc",
+                methods=["GET"],
+                strip_prefix=True,
+                upstream=UpstreamConfig(url=mock_upstream.base_url),
+                # no per-route rate_limit -> falls back to global
+            )
+        ],
+    )
+    with GatewayServer(cfg) as server:
+        statuses = []
+        for _ in range(3):
+            conn = http.client.HTTPConnection("127.0.0.1", server.port)
+            conn.request("GET", "/svc/echo")
+            resp = conn.getresponse()
+            resp.read()
+            statuses.append(resp.status)
+            conn.close()
+    assert statuses == [200, 200, 429]
