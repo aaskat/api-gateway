@@ -7,15 +7,48 @@ short-circuit by returning a Response without calling next, and may post-process
 the Response on the way back out (inner->out).
 """
 
+import json
+import time
 from typing import Callable
 
+from gatewaykit.config import RateLimit as RateLimitConfig
 from gatewaykit.config import RouteConfig
 from gatewaykit.core import RequestContext, Response
+from gatewaykit.ratelimit import FixedWindowLimiter, SlidingWindowLimiter
 
 
 class Middleware:
     def handle(self, ctx: RequestContext, next: Callable[[RequestContext], Response]) -> Response:
         return next(ctx)  # default: pass through
+
+
+_LIMITERS = {"fixed_window": FixedWindowLimiter, "sliding_window": SlidingWindowLimiter}
+
+
+class RateLimit(Middleware):
+    """Reject requests over the configured rate with 429 + Retry-After.
+
+    Buckets per client IP or globally; the strategy (fixed/sliding window) and
+    limits come from config. The limiter is built once (in build_pipeline) so its
+    state persists across requests.
+    """
+
+    def __init__(self, config: RateLimitConfig, clock: Callable[[], float] = time.monotonic):
+        self._limiter = _LIMITERS[config.strategy](config.requests, config.window, clock)
+        self._per = config.per
+
+    def handle(self, ctx, next):
+        key = ctx.client_ip if self._per == "ip" else "global"
+        decision = self._limiter.check(key)
+        if not decision.allowed:
+            return _too_many_requests(decision.retry_after)
+        return next(ctx)
+
+
+def _too_many_requests(retry_after: int) -> Response:
+    body = json.dumps({"error": "rate_limited", "retry_after": retry_after}).encode()
+    headers = {"Content-Type": "application/json", "Retry-After": str(retry_after)}
+    return Response(429, headers, body)
 
 
 class StripPrefix(Middleware):
