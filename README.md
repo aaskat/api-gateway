@@ -70,7 +70,7 @@ injected clock so nothing sleeps. Run the mock standalone with
 | Upstream down / timeout → 502 | ✅ |
 | `strip_prefix` | ✅ |
 | Middleware pipeline (one feature = one middleware) | ✅ |
-| Rate limiting — `fixed_window` + `sliding_window`, thread-safe | ⚠️ built & tested, **not yet wired into the request path** |
+| Rate limiting — `fixed_window` + `sliding_window`, per `ip`/`global`, `429` + `Retry-After` | ✅ wired into the request path |
 | `auth` (api_key) | ❌ parsed, not enforced |
 | Per-route `timeout` override | ❌ parsed; global timeout applied |
 | `retry` / backoff | ❌ parsed, not implemented |
