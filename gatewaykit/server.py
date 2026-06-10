@@ -26,7 +26,6 @@ class _Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and path == "/health":
             self._send(self.server.health.response())
             return
-
         match self.server.router.match(path):
             case None:
                 self._send(_not_found(path))
@@ -51,9 +50,11 @@ class _Handler(BaseHTTPRequestHandler):
         return run_pipeline(ctx, chain, self._forward)
 
     def _forward(self, ctx: RequestContext) -> Response:
+        # Temp: pick targets[0] until load balancing across targets is implemented.
+        url = ctx.route.upstream.url if ctx.route.upstream.url else ctx.route.upstream.targets[0].url
         return forward(
             ctx.method,
-            ctx.route.upstream.url,
+            url,
             ctx.upstream_path,
             ctx.headers,
             ctx.body,
